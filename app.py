@@ -13,7 +13,7 @@ st.set_page_config(
 st.title("DBI Stock Orders Manager")
 
 # Create tabs
-tab1, tab2, tab3 = st.tabs(["Upload Database", "PO Generation", "Assembly Order Generation"])
+tab1, tab2, tab3, tab4 = st.tabs(["Upload Database", "PO Generation", "Assembly Order Generation", "Supplier Management"])
 
 with tab1:
     st.header("Upload Database")
@@ -75,6 +75,26 @@ with tab1:
                     dataframes["Inventory List"] = df
                     parsed_files.append(("Inventory List", filename, "✅"))
                 
+                # Replenishment Report - NC
+                elif "replenishment-Combined NC Warehouses" in filename or "replenishment-Combined_NC_Warehouses" in filename:
+                    df = pd.read_csv(io.BytesIO(file_content))
+                    # Clean up SKU column (remove Excel quotes if present)
+                    if 'SKU' in df.columns:
+                        df['SKU'] = df['SKU'].astype(str).str.replace('="', '').str.replace('"', '')
+                    df = clean_dataframe(df)
+                    dataframes["Replenishment Report - NC"] = df
+                    parsed_files.append(("Replenishment Report - NC", filename, "✅"))
+                
+                # Replenishment Report - CA
+                elif "replenishment-Combined CA Warehouses" in filename or "replenishment-Combined_CA_Warehouses" in filename:
+                    df = pd.read_csv(io.BytesIO(file_content))
+                    # Clean up SKU column (remove Excel quotes if present)
+                    if 'SKU' in df.columns:
+                        df['SKU'] = df['SKU'].astype(str).str.replace('="', '').str.replace('"', '')
+                    df = clean_dataframe(df)
+                    dataframes["Replenishment Report - CA"] = df
+                    parsed_files.append(("Replenishment Report - CA", filename, "✅"))
+                
                 # Sales by Product Details Report (skip first 4 rows, handle multi-index)
                 elif "Sales by Product Details Report" in filename and filename.endswith('.xlsx'):
                     # Read with multi-index columns, skip first 4 rows
@@ -83,8 +103,20 @@ with tab1:
                     
                     # Extract the different metrics as separate dataframes
                     if len(df.columns.levels) == 2:  # Confirm it's multi-index
-                        # Get the first column (usually SKU or product identifier)
-                        first_col = df.iloc[:, 0]
+                        # Get the first column data and name (usually SKU or product identifier)
+                        first_col_data = df.iloc[:, 0]
+                        first_col_name = df.columns[0]
+                        
+                        # Extract the clean column name (handle multi-index column name)
+                        if isinstance(first_col_name, tuple):
+                            # For multi-index, use the first non-empty part
+                            clean_first_col_name = next((part for part in first_col_name if str(part) != 'nan' and str(part).strip()), 'SKU')
+                        else:
+                            clean_first_col_name = str(first_col_name)
+                        
+                        # If the column name is still unclear, default to 'SKU'
+                        if clean_first_col_name in ['Unnamed: 0', '0', 'nan'] or 'Unnamed' in str(clean_first_col_name):
+                            clean_first_col_name = 'SKU'
                         
                         # Extract each metric type
                         metrics = ['Sale', 'Quantity', 'COGS', 'Profit']
@@ -92,22 +124,31 @@ with tab1:
                         for metric in metrics:
                             try:
                                 # Get columns that have the metric in the second level
-                                metric_cols = [col for col in df.columns if col[1] == metric]
+                                metric_cols = [col for col in df.columns if len(col) > 1 and col[1] == metric]
                                 if metric_cols:
                                     # Create dataframe with first column and metric columns
                                     metric_df = pd.DataFrame()
-                                    metric_df[df.columns[0][0]] = first_col  # First column name
+                                    
+                                    # Add the SKU/identifier column
+                                    metric_df[clean_first_col_name] = first_col_data
                                     
                                     # Add metric columns with month names
                                     for col in metric_cols:
-                                        month = col[0]  # Month name
+                                        month = col[0]  # Month name from first level
                                         metric_df[month] = df[col]
                                     
                                     # Clean the metric dataframe
                                     metric_df = clean_dataframe(metric_df)
+                                    
+                                    # Ensure the first column is treated as SKU for consistency
+                                    if clean_first_col_name != 'SKU':
+                                        metric_df = metric_df.rename(columns={clean_first_col_name: 'SKU'})
+                                    
                                     dataframes[f"Sales - {metric}"] = metric_df
+                                    
                             except Exception as e:
                                 st.warning(f"Error processing {metric} data: {str(e)}")
+                                st.exception(e)
                         
                         parsed_files.append(("Sales by Product Details Report", filename, "✅ (Split into metrics)"))
                     else:
@@ -186,9 +227,13 @@ with tab1:
             st.warning("No recognized file patterns found in uploaded files")
 
 with tab2:
-    st.header("PO Generation")
-    # Content for PO Generation tab will go here
+    import po_generation
+    po_generation.run_po_generation_tab()
 
 with tab3:
-    st.header("Assembly Order Generation")
-    # Content for Assembly Order Generation tab will go here
+    import assembly_order_generation
+    assembly_order_generation.run_assembly_order_generation()
+
+with tab4:
+    import supplier_management
+    supplier_management.run_supplier_management()
