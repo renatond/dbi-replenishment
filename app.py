@@ -6,7 +6,8 @@ import io
 st.set_page_config(
     page_title="DBI Stock Orders Manager",
     page_icon="📦",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="collapsed"  # Reduces initial render time
 )
 
 # Main title
@@ -144,7 +145,16 @@ with tab1:
                                     if clean_first_col_name != 'SKU':
                                         metric_df = metric_df.rename(columns={clean_first_col_name: 'SKU'})
                                     
-                                    dataframes[f"Sales - {metric}"] = metric_df
+                                    # Calculate Total and Average columns for the metric
+                                    metric_columns = [col for col in metric_df.columns if col != 'SKU']
+                                    if metric_columns:
+                                        # Calculate Total (sum of all months)
+                                        metric_df[f'Total {metric}'] = metric_df[metric_columns].sum(axis=1, skipna=True)
+                                        
+                                        # Calculate Average (mean of all months)
+                                        metric_df[f'Average {metric}'] = metric_df[metric_columns].mean(axis=1, skipna=True)
+                                    
+                                    dataframes[f"By Products - {metric}"] = metric_df
                                     
                             except Exception as e:
                                 st.warning(f"Error processing {metric} data: {str(e)}")
@@ -167,13 +177,12 @@ with tab1:
     
     # Process uploaded files
     if uploaded_files:
-        st.subheader("Processing Files...")
-        
-        # Parse the files
-        new_dataframes, file_status = parse_uploaded_files(uploaded_files)
-        
-        # Update session state with new dataframes
-        st.session_state.dataframes.update(new_dataframes)
+        with st.spinner("Processing files..."):
+            # Parse the files
+            new_dataframes, file_status = parse_uploaded_files(uploaded_files)
+            
+            # Update session state with new dataframes
+            st.session_state.dataframes.update(new_dataframes)
         
         # Display file processing status
         st.subheader("File Processing Status:")
@@ -194,46 +203,68 @@ with tab1:
         
         # Dropdown to select dataframe
         df_names = list(st.session_state.dataframes.keys())
-        selected_df_name = st.selectbox("Select a dataset to view:", df_names)
+        selected_df_name = st.selectbox(
+            "Select a dataset to view:", 
+            df_names,
+            key="upload_df_selector"
+        )
         
         if selected_df_name:
-            df = st.session_state.dataframes[selected_df_name]
-            
-            # Show basic info about the dataframe
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Rows", len(df))
-            with col2:
-                st.metric("Columns", len(df.columns))
-            with col3:
-                st.metric("Memory Usage", f"{df.memory_usage(deep=True).sum() / 1024:.1f} KB")
-            
-            # Display the dataframe
-            st.subheader(f"Data Preview: {selected_df_name}")
-            st.dataframe(df, use_container_width=True)
-            
-            # Option to download as CSV
-            csv = df.to_csv(index=False)
-            st.download_button(
-                label=f"Download {selected_df_name} as CSV",
-                data=csv,
-                file_name=f"{selected_df_name.replace(' ', '_').replace('-', '_')}.csv",
-                mime='text/csv'
-            )
+            # Use st.container to prevent unnecessary rerenders
+            with st.container():
+                df = st.session_state.dataframes[selected_df_name]
+                
+                # Show basic info about the dataframe
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Rows", len(df))
+                with col2:
+                    st.metric("Columns", len(df.columns))
+                with col3:
+                    st.metric("Memory Usage", f"{df.memory_usage(deep=True).sum() / 1024:.1f} KB")
+                
+                # Display the dataframe
+                st.subheader(f"Data Preview: {selected_df_name}")
+                
+                # Use height parameter to optimize rendering for large dataframes
+                st.dataframe(df, use_container_width=True, height=400)
+                
+                # Option to download as CSV - cached to avoid regeneration
+                @st.cache_data
+                def convert_df_to_csv(dataframe):
+                    return dataframe.to_csv(index=False)
+                
+                csv = convert_df_to_csv(df)
+                st.download_button(
+                    label=f"Download {selected_df_name} as CSV",
+                    data=csv,
+                    file_name=f"{selected_df_name.replace(' ', '_').replace('-', '_')}.csv",
+                    mime='text/csv'
+                )
     else:
         if not uploaded_files:
             st.info("👆 Please upload files to get started")
         else:
             st.warning("No recognized file patterns found in uploaded files")
 
+# Lazy load modules to improve initial app load time
 with tab2:
-    import po_generation
-    po_generation.run_po_generation_tab()
+    try:
+        import po_generation
+        po_generation.run_po_generation_tab()
+    except ImportError as e:
+        st.error(f"Error loading PO Generation module: {e}")
 
 with tab3:
-    import assembly_order_generation
-    assembly_order_generation.run_assembly_order_generation()
+    try:
+        import assembly_order_generation
+        assembly_order_generation.run_assembly_order_generation()
+    except ImportError as e:
+        st.error(f"Error loading Assembly Order Generation module: {e}")
 
 with tab4:
-    import supplier_management
-    supplier_management.run_supplier_management()
+    try:
+        import supplier_management
+        supplier_management.run_supplier_management()
+    except ImportError as e:
+        st.error(f"Error loading Supplier Management module: {e}")

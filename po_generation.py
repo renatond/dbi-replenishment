@@ -195,14 +195,14 @@ def run_po_generation(dataframes, location):
         quantity_df = None
         
         # Check for combined sales data
-        if 'Sales - Sale' in dataframes and 'Sales - COGS' in dataframes and 'Sales - Profit' in dataframes and 'Sales - Quantity' in dataframes:
+        if 'By Products - Sale' in dataframes and 'By Products - COGS' in dataframes and 'By Products - Profit' in dataframes and 'By Products - Quantity' in dataframes:
             st.info("Using combined Sales by Product Details Report data...")
             
             # Get the individual metric dataframes and sum across months
-            sales_df = dataframes['Sales - Sale'].copy()
-            cogs_df = dataframes['Sales - COGS'].copy()
-            profit_df = dataframes['Sales - Profit'].copy()
-            quantity_df = dataframes['Sales - Quantity'].copy()
+            sales_df = dataframes['By Products - Sale'].copy()
+            cogs_df = dataframes['By Products - COGS'].copy()
+            profit_df = dataframes['By Products - Profit'].copy()
+            quantity_df = dataframes['By Products - Quantity'].copy()
             
             # Sum sales across all month columns for each SKU
             sales_cols = [col for col in sales_df.columns if col != 'SKU']
@@ -313,7 +313,7 @@ def run_po_generation_tab():
     
     # Check if required dataframes are available
     required_base_dfs = ['Inventory List', 'Availability Report']
-    sales_dfs = [df for df in st.session_state.dataframes.keys() if df.startswith('Sales -')]
+    sales_dfs = [df for df in st.session_state.dataframes.keys() if df.startswith('By Products -')]
     
     # Validation section
     st.subheader("📋 Data Validation")
@@ -327,10 +327,10 @@ def run_po_generation_tab():
             missing_files.append(df)
     
     if len(sales_dfs) >= 4:  # Need all 4 sales metrics
-        st.write(f"✅ Sales Data ({len(sales_dfs)} datasets available)")
+        st.write(f"✅ By Products Data ({len(sales_dfs)} datasets available)")
     else:
-        st.write("❌ Sales Data (Need Sales by Product Details Report)")
-        missing_files.append("Sales Data")
+        st.write("❌ By Products Data (Need Sales by Product Details Report)")
+        missing_files.append("By Products Data")
     
     # Check for replenishment reports
     replenishment_nc = any('Replenishment Report - NC' in df for df in st.session_state.dataframes.keys())

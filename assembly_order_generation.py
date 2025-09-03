@@ -7,11 +7,17 @@ def calculate_sales_velocity(sales_df):
     if sales_df is None or len(sales_df) == 0:
         return pd.DataFrame(columns=['SKU', 'avg_daily_sales', 'avg_monthly_sales'])
     
+    # Debug: Show what data we're working with
+    st.write(f"**Sales velocity calculation input:**")
+    st.write(f"- DataFrame shape: {sales_df.shape}")
+    st.write(f"- Columns: {list(sales_df.columns)}")
+    
     # Get the first column as SKU column
     sku_col = sales_df.columns[0]
     
-    # Get sales columns (exclude SKU column)
-    sales_columns = [col for col in sales_df.columns if col != sku_col]
+    # Get sales columns (exclude SKU column and Total/Average columns)
+    sales_columns = [col for col in sales_df.columns if col != sku_col and not col.startswith('Total') and not col.startswith('Average')]
+    st.write(f"- Using columns for calculation: {sales_columns}")
     
     result_df = sales_df.copy()
     
@@ -153,8 +159,17 @@ def get_replenish_skus(bom_df, inventory_df, availability_df, sales_velocity_df)
         needs_replenishment = (available_in_nc + inv_position['on_order']) < avg_monthly_sales
         
         if needs_replenishment and replenishment_qty > 0:
-            # Calculate quantity for assembly (from Input tab logic)
-            qty_for_assembly = max(2, round(avg_monthly_sales - available_in_nc))
+            # Calculate quantity for assembly with reasonable bounds
+            base_qty = max(2, round(avg_monthly_sales - available_in_nc))
+            
+            # Apply reasonable limits based on monthly sales velocity
+            # Cap at 3x monthly sales to prevent unrealistic quantities
+            max_reasonable_qty = max(10, round(avg_monthly_sales * 3))
+            
+            # Also consider a hard cap for very high-velocity items
+            absolute_max = 1000  # No single assembly order should exceed 1000 units
+            
+            qty_for_assembly = min(base_qty, max_reasonable_qty, absolute_max)
             
             replenish_list.append({
                 'SKU': str(sku),  # Ensure SKU is stored as string
@@ -249,8 +264,8 @@ def analyze_assembly_status(bom_df, availability_df, replenish_df):
     
     return assembly_analysis
 
-def generate_transfer_recommendations(availability_df, assembly_analysis):
-    """Generate recommendations for transfers from NC-Armory to NC-Main"""
+def generate_transfer_recommendations(availability_df, bom_df):
+    """Generate recommendations for transfers from NC-Armory to NC-Main based on business logic"""
     
     if availability_df is None or len(availability_df) == 0:
         return []
@@ -268,22 +283,20 @@ def generate_transfer_recommendations(availability_df, assembly_analysis):
     if not all(col in availability_df.columns for col in required_cols):
         return []
     
-    # Get all component SKUs that are needed for assemblies with shortages
-    needed_components = set()
-    for assembly in assembly_analysis:
-        if assembly['assembly_status'] == 'Cannot Assemble':
-            for component in assembly['components']:
-                if component['status'] == 'Shortage':
-                    needed_components.add(component['component_sku'])
+    # Get all SKUs that are BOM components (these should NOT be transferred)
+    bom_component_skus = set()
+    if bom_df is not None and 'Component SKU' in bom_df.columns:
+        bom_component_skus = set(bom_df['Component SKU'].astype(str).unique())
     
-    # Find items in NC-Armory with >20 units that could help with shortages
+    # Find items in NC-Armory with >20 units that are NOT BOM components
     armory_data = availability_df[availability_df[location_col] == 'NC - Armory']
     
     for _, item in armory_data.iterrows():
-        sku = item[sku_col]
+        sku = str(item[sku_col])
         on_hand_armory = item[on_hand_col]
         
-        if on_hand_armory > 20 and sku in needed_components:
+        # Business logic: Transfer if >20 in Armory AND not a BOM component AND <20 in Main
+        if on_hand_armory > 20 and sku not in bom_component_skus:
             # Check NC-Main inventory for this SKU
             main_inv = calculate_inventory_position(availability_df, sku, ['NC - Main'])
             
@@ -298,10 +311,47 @@ def generate_transfer_recommendations(availability_df, assembly_analysis):
                         'available_armory': on_hand_armory,
                         'current_main': main_inv['on_hand'],
                         'recommended_transfer': transfer_qty,
-                        'reason': 'Component shortage for assembly'
+                        'reason': 'Balance inventory (not needed for assemblies)'
                     })
     
     return transfer_recommendations
+
+def calculate_abc_analysis(profit_df):
+    """Calculate ABC analysis based on cumulative profit (70-20-10 split)"""
+    
+    if profit_df is None or len(profit_df) == 0:
+        return pd.DataFrame()
+    
+    # Get the first column as SKU column
+    sku_col = profit_df.columns[0]
+    
+    # Get profit columns (exclude SKU column)
+    profit_columns = [col for col in profit_df.columns if col != sku_col]
+    
+    # Calculate total profit for each SKU
+    profit_df_copy = profit_df.copy()
+    profit_df_copy['total_profit'] = profit_df_copy[profit_columns].sum(axis=1, skipna=True)
+    
+    # Sort by total profit descending
+    profit_df_copy = profit_df_copy.sort_values('total_profit', ascending=False)
+    
+    # Calculate cumulative profit
+    profit_df_copy['cumulative_profit'] = profit_df_copy['total_profit'].cumsum()
+    total_profit = profit_df_copy['total_profit'].sum()
+    profit_df_copy['cumulative_percentage'] = profit_df_copy['cumulative_profit'] / total_profit
+    
+    # Assign ABC categories
+    profit_df_copy['abc_category'] = 'C'  # Default to C
+    profit_df_copy.loc[profit_df_copy['cumulative_percentage'] <= 0.70, 'abc_category'] = 'A'
+    profit_df_copy.loc[(profit_df_copy['cumulative_percentage'] > 0.70) & 
+                       (profit_df_copy['cumulative_percentage'] <= 0.90), 'abc_category'] = 'B'
+    
+    # Return simplified result
+    result = profit_df_copy[[sku_col, 'total_profit', 'abc_category']].copy()
+    result.columns = ['SKU', 'total_profit', 'abc_category']
+    result['SKU'] = result['SKU'].astype(str)
+    
+    return result
 
 def run_assembly_order_generation():
     """Main function for Assembly Order Generation processing"""
@@ -310,7 +360,7 @@ def run_assembly_order_generation():
     
     # Check if required dataframes are available
     required_dfs = ['BOM Report', 'Availability Report', 'Inventory List']
-    sales_dfs = [df for df in st.session_state.dataframes.keys() if df.startswith('Sales -')]
+    sales_dfs = [df for df in st.session_state.dataframes.keys() if df.startswith('By Products -')]
     
     # Validation section
     st.subheader("📋 Data Validation")
@@ -324,10 +374,10 @@ def run_assembly_order_generation():
             missing_files.append(df)
     
     if sales_dfs:
-        st.write(f"✅ Sales Data ({len(sales_dfs)} datasets available)")
+        st.write(f"✅ By Products Data ({len(sales_dfs)} datasets available)")
     else:
-        st.write("❌ Sales Data")
-        missing_files.append("Sales Data")
+        st.write("❌ By Products Data")
+        missing_files.append("By Products Data")
     
     # Processing button
     if missing_files:
@@ -350,6 +400,8 @@ def run_assembly_order_generation():
         st.session_state.replenish_df = None
     if 'sales_velocity_df' not in st.session_state:
         st.session_state.sales_velocity_df = None
+    if 'abc_analysis' not in st.session_state:
+        st.session_state.abc_analysis = None
 
     if st.button("Generate Assembly Orders", disabled=not processing_enabled, type="primary"):
         if processing_enabled:
@@ -361,14 +413,28 @@ def run_assembly_order_generation():
                     inventory_df = st.session_state.dataframes['Inventory List']
                     
                     # Get sales data (prefer Quantity data)
-                    sales_df = None
+                    st.write("**Available By Products data:**", sales_dfs)
+                    
+                    # Look specifically for Quantity data
+                    quantity_df_name = None
                     for df_name in sales_dfs:
                         if 'Quantity' in df_name:
-                            sales_df = st.session_state.dataframes[df_name]
+                            quantity_df_name = df_name
                             break
                     
-                    if sales_df is None:
-                        sales_df = st.session_state.dataframes[sales_dfs[0]]  # Use first available sales data
+                    if quantity_df_name:
+                        sales_df = st.session_state.dataframes[quantity_df_name]
+                        st.success(f"✅ Using {quantity_df_name} for sales velocity calculation (UNITS)")
+                    else:
+                        # Fallback logic - but warn strongly
+                        if sales_dfs:
+                            sales_df = st.session_state.dataframes[sales_dfs[0]]
+                            st.error(f"❌ Quantity data not found! Using {sales_dfs[0]} instead. This will likely produce incorrect results as it uses dollar amounts, not units.")
+                            st.write("**Expected:** 'By Products - Quantity' dataframe")
+                            st.write("**Found:** ", sales_dfs)
+                        else:
+                            st.error("❌ No By Products data found at all!")
+                            return
                     
                     # Run the analysis pipeline
                     st.subheader("📊 Analysis Results")
@@ -412,9 +478,36 @@ def run_assembly_order_generation():
                                 total_qty = sum([a['qty_for_assembly'] for a in ready_assemblies])
                                 st.metric("Total Units Ready", total_qty)
                     
-                    # Step 4: Transfer recommendations
-                    with st.expander("🚚 Step 4: Transfer Recommendations", expanded=False):
-                        transfer_recommendations = generate_transfer_recommendations(availability_df, assembly_analysis)
+                    # Step 4: ABC Analysis
+                    with st.expander("📊 Step 4: ABC Analysis", expanded=False):
+                        # Get profit data for ABC analysis
+                        profit_df = None
+                        for df_name in sales_dfs:
+                            if 'Profit' in df_name:
+                                profit_df = st.session_state.dataframes[df_name]
+                                break
+                        
+                        if profit_df is not None:
+                            abc_analysis = calculate_abc_analysis(profit_df)
+                            st.session_state.abc_analysis = abc_analysis
+                            st.write(f"ABC Analysis completed for {len(abc_analysis)} SKUs")
+                            
+                            # Show ABC distribution
+                            abc_counts = abc_analysis['abc_category'].value_counts()
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Category A (70%)", abc_counts.get('A', 0))
+                            with col2:
+                                st.metric("Category B (20%)", abc_counts.get('B', 0))
+                            with col3:
+                                st.metric("Category C (10%)", abc_counts.get('C', 0))
+                        else:
+                            st.warning("Profit data not available for ABC analysis")
+                            st.session_state.abc_analysis = pd.DataFrame()
+                    
+                    # Step 5: Transfer recommendations
+                    with st.expander("🚚 Step 5: Transfer Recommendations", expanded=False):
+                        transfer_recommendations = generate_transfer_recommendations(availability_df, bom_df)
                         st.session_state.transfer_recommendations = transfer_recommendations
                         
                         if len(transfer_recommendations) > 0:
@@ -437,56 +530,169 @@ def run_assembly_order_generation():
         assembly_analysis = st.session_state.assembly_analysis_results
         
         if len(assembly_analysis) > 0:
-            st.subheader("📋 Final Assembly Production Orders")
+            st.subheader("📋 Generated Reports")
             
-            # Filter options - this will persist across reruns
-            status_filter = st.selectbox(
-                "Filter by Assembly Status:",
-                ["Ready for Production", "All", "Cannot Assemble"],
-                index=0,  # Default to "Ready for Production"
-                key="status_filter"
+            # Report selection dropdown with optimized rendering
+            report_type = st.selectbox(
+                "Select Report to View:",
+                [
+                    "Assembly Orders (Ready for Production)", 
+                    "Cannot Assemble Report", 
+                    "Transfer Recommendations"
+                ],
+                index=0,
+                key="assembly_report_type"
             )
             
-            # Filter data based on selection
-            filtered_analysis = assembly_analysis
-            if status_filter != "All":
-                filtered_analysis = [a for a in assembly_analysis if a['assembly_status'] == status_filter]
+            # Use containers to optimize rendering and prevent unnecessary reruns
+            if report_type == "Assembly Orders (Ready for Production)":
+                with st.container():
+                    # Assembly Orders Report
+                    ready_assemblies = [a for a in assembly_analysis if a['assembly_status'] == 'Ready for Production']
+                    
+                    if ready_assemblies:
+                        st.subheader("🏭 Assembly Orders - Ready for Production")
+                        st.write(f"**{len(ready_assemblies)} assemblies ready for production**")
+                        
+                        # Cache the dataframe creation to avoid recreation on each rerun
+                        @st.cache_data
+                        def create_assembly_df(assemblies_data):
+                            return pd.DataFrame([{
+                                'SKU': a['assembly_sku'],
+                                'Assembly Name': a['assembly_name'],
+                                'Quantity for Assembly': a['qty_for_assembly'],
+                                'Available in NC': a['available_in_nc'],
+                                'Avg Monthly Sales': round(a['avg_monthly_sales'], 1),
+                                'Components Ready': f"{a['ready_components']}/{a['total_components']}"
+                            } for a in assemblies_data]).sort_values('Quantity for Assembly', ascending=False)
+                        
+                        assembly_df = create_assembly_df(ready_assemblies)
+                        st.dataframe(assembly_df, use_container_width=True, height=400)
+                        
+                        # Download option with cached CSV generation
+                        @st.cache_data
+                        def convert_assembly_to_csv(dataframe):
+                            return dataframe.to_csv(index=False)
+                        
+                        csv = convert_assembly_to_csv(assembly_df)
+                        st.download_button(
+                            label="📥 Download Assembly Orders CSV",
+                            data=csv,
+                            file_name="assembly_orders_ready_for_production.csv",
+                            mime='text/csv'
+                        )
+                    else:
+                        st.info("No assemblies are currently ready for production.")
             
-            # Display assembly table
-            if filtered_analysis:
-                assembly_df = pd.DataFrame([{
-                    'SKU': a['assembly_sku'],
-                    'Assembly Name': a['assembly_name'],
-                    'Quantity for Assembly': a['qty_for_assembly'],
-                    'Status': a['assembly_status'],
-                    'Available in NC': a['available_in_nc'],
-                    'Avg Monthly Sales': round(a['avg_monthly_sales'], 1),
-                    'Components Ready': f"{a['ready_components']}/{a['total_components']}"
-                } for a in filtered_analysis])
+            elif report_type == "Cannot Assemble Report":
+                with st.container():
+                    # Cannot Assemble Report
+                    cannot_assemble = [a for a in assembly_analysis if a['assembly_status'] == 'Cannot Assemble']
+                    
+                    if cannot_assemble:
+                        st.subheader("❌ Cannot Assemble Report")
+                        st.write(f"**{len(cannot_assemble)} assemblies cannot be completed due to component shortages**")
+                        
+                        # Cache the dataframe creation
+                        @st.cache_data
+                        def create_cannot_assemble_df(assemblies_data):
+                            return pd.DataFrame([{
+                                'SKU': a['assembly_sku'],
+                                'Assembly Name': a['assembly_name'],
+                                'Quantity Needed': a['qty_for_assembly'],
+                                'Available in NC': a['available_in_nc'],
+                                'Avg Monthly Sales': round(a['avg_monthly_sales'], 1),
+                                'Components Ready': f"{a['ready_components']}/{a['total_components']}",
+                                'Missing Components': len([c for c in a['components'] if c['status'] == 'Shortage'])
+                            } for a in assemblies_data])
+                        
+                        cannot_assemble_df = create_cannot_assemble_df(cannot_assemble)
+                        st.dataframe(cannot_assemble_df, use_container_width=True, height=400)
+                        
+                        # Component shortage details
+                        st.subheader("🔍 Component Shortage Details")
+                        selected_cannot_assemble = st.selectbox(
+                            "Select assembly to view component shortages:", 
+                            [a['assembly_sku'] for a in cannot_assemble],
+                            key="selected_cannot_assemble_detail"
+                        )
+                        
+                        if selected_cannot_assemble:
+                            selected_data = next(a for a in cannot_assemble if a['assembly_sku'] == selected_cannot_assemble)
+                            
+                            shortage_components = [c for c in selected_data['components'] if c['status'] == 'Shortage']
+                            if shortage_components:
+                                @st.cache_data
+                                def create_shortage_df(components_data):
+                                    return pd.DataFrame([{
+                                        'Component SKU': c['component_sku'],
+                                        'Component Name': c['component_name'],
+                                        'Needed': c['total_needed'],
+                                        'Available': c['available'],
+                                        'Shortage': c['shortage']
+                                    } for c in components_data])
+                                
+                                shortage_df = create_shortage_df(shortage_components)
+                                st.dataframe(shortage_df, use_container_width=True)
+                        
+                        # Download option with cached CSV
+                        @st.cache_data
+                        def convert_cannot_assemble_to_csv(dataframe):
+                            return dataframe.to_csv(index=False)
+                        
+                        csv = convert_cannot_assemble_to_csv(cannot_assemble_df)
+                        st.download_button(
+                            label="📥 Download Cannot Assemble Report CSV",
+                            data=csv,
+                            file_name="cannot_assemble_report.csv",
+                            mime='text/csv'
+                        )
+                    else:
+                        st.info("All assemblies are ready for production - no component shortages found.")
+            
+            elif report_type == "Transfer Recommendations":
+                with st.container():
+                    # Transfer Recommendations Report
+                    if hasattr(st.session_state, 'transfer_recommendations') and st.session_state.transfer_recommendations:
+                        st.subheader("🚚 Transfer Recommendations")
+                        
+                        # Cache the dataframe creation
+                        @st.cache_data
+                        def create_transfer_df(transfer_data):
+                            return pd.DataFrame(transfer_data)
+                        
+                        transfer_df = create_transfer_df(st.session_state.transfer_recommendations)
+                        
+                        st.write(f"**{len(transfer_df)} transfer recommendations to balance inventory**")
+                        st.dataframe(transfer_df, use_container_width=True, height=400)
+                        
+                        # Download option with cached CSV
+                        @st.cache_data
+                        def convert_transfer_to_csv(dataframe):
+                            return dataframe.to_csv(index=False)
+                        
+                        csv = convert_transfer_to_csv(transfer_df)
+                        st.download_button(
+                            label="📥 Download Transfer Recommendations CSV",
+                            data=csv,
+                            file_name="transfer_recommendations.csv",
+                            mime='text/csv'
+                        )
+                    else:
+                        st.info("No transfer recommendations generated.")
+            
+            
+            # Detailed component analysis section (available for all reports)
+            if report_type in ["Assembly Orders (Ready for Production)", "Cannot Assemble Report"]:
+                st.divider()
+                st.subheader("🔧 Detailed Component Analysis")
                 
-                # Sort by quantity descending (priority)
-                assembly_df = assembly_df.sort_values('Quantity for Assembly', ascending=False)
-                
-                st.dataframe(assembly_df, use_container_width=True)
-                
-                # Download option
-                csv = assembly_df.to_csv(index=False)
-                st.download_button(
-                    label=f"📥 Download Assembly Orders ({status_filter}) as CSV",
-                    data=csv,
-                    file_name=f"assembly_orders_{status_filter.lower().replace(' ', '_')}.csv",
-                    mime='text/csv'
-                )
-                
-                # Detailed component analysis for selected assembly
-                st.subheader("🔧 Component Analysis")
-                
-                assembly_skus = [a['assembly_sku'] for a in filtered_analysis]
+                assembly_skus = [a['assembly_sku'] for a in assembly_analysis]
                 if assembly_skus:
-                    selected_assembly = st.selectbox("Select assembly for detailed component analysis:", assembly_skus, key="selected_assembly")
+                    selected_assembly = st.selectbox("Select assembly for detailed component analysis:", assembly_skus, key="detailed_selected_assembly")
                     
                     if selected_assembly:
-                        selected_data = next(a for a in filtered_analysis if a['assembly_sku'] == selected_assembly)
+                        selected_data = next(a for a in assembly_analysis if a['assembly_sku'] == selected_assembly)
                         
                         st.write(f"**Assembly:** {selected_data['assembly_name']} ({selected_assembly})")
                         st.write(f"**Quantity Needed:** {selected_data['qty_for_assembly']}")
@@ -504,5 +710,3 @@ def run_assembly_order_generation():
                         } for c in selected_data['components']])
                         
                         st.dataframe(component_df, use_container_width=True)
-            else:
-                st.info(f"No assemblies found with status: {status_filter}")

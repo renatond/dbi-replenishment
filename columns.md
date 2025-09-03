@@ -8,3 +8,9 @@ ProductCode,Name,Category,Brand,Type,FixedAssetType,CostingMethod,Length,Width,H
 BOM Report Columns:
 Product, Product SKU, Component SKU, Location, Component, Quantity, Available, OnHand
 
+Quantity Columns:
+SKU, March, April, May, June, July, August
+
+Profit COlumns:
+SKU, March, April, May, June, July, August
+
