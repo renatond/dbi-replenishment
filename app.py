@@ -12,6 +12,7 @@ st.set_page_config(
 
 # Main title
 st.title("DBI Stock Orders Manager")
+st.write('v0.1.0')
 
 # Create tabs
 tab1, tab2, tab3, tab4 = st.tabs(["Upload Database", "PO Generation", "Assembly Order Generation", "Supplier Management"])
@@ -175,27 +176,43 @@ with tab1:
         
         return dataframes, parsed_files
     
-    # Process uploaded files
+    # Initialize session state for tracking processed files
+    if 'processed_files' not in st.session_state:
+        st.session_state.processed_files = {}
+    if 'file_status' not in st.session_state:
+        st.session_state.file_status = []
+    
+    # Process uploaded files only if they are new or changed
     if uploaded_files:
-        with st.spinner("Processing files..."):
-            # Parse the files
-            new_dataframes, file_status = parse_uploaded_files(uploaded_files)
+        # Create a hash of current files to detect changes
+        current_files_hash = {f.name: f.size for f in uploaded_files}
+        
+        # Check if files have changed
+        files_changed = current_files_hash != st.session_state.processed_files
+        
+        if files_changed:
+            with st.spinner("Processing files..."):
+                # Parse the files
+                new_dataframes, file_status = parse_uploaded_files(uploaded_files)
+                
+                # Update session state with new dataframes
+                st.session_state.dataframes.update(new_dataframes)
+                st.session_state.processed_files = current_files_hash
+                st.session_state.file_status = file_status
             
-            # Update session state with new dataframes
-            st.session_state.dataframes.update(new_dataframes)
-        
-        # Display file processing status
-        st.subheader("File Processing Status:")
-        for report_type, filename, status in file_status:
-            col1, col2, col3 = st.columns([2, 3, 1])
-            with col1:
-                st.write(f"**{report_type}**")
-            with col2:
-                st.write(filename)
-            with col3:
-                st.write(status)
-        
-        st.success(f"Successfully processed {len(uploaded_files)} file(s)")
+            st.success(f"Successfully processed {len(uploaded_files)} file(s)")
+    
+    # Display file processing status if files have been processed
+    if st.session_state.file_status:
+        with st.expander("File Processing Status", expanded=True):
+            for report_type, filename, status in st.session_state.file_status:
+                col1, col2, col3 = st.columns([2, 3, 1])
+                with col1:
+                    st.write(f"**{report_type}**")
+                with col2:
+                    st.write(filename)
+                with col3:
+                    st.write(status)
         
     # Display dataframes if any exist
     if st.session_state.dataframes:
@@ -214,14 +231,15 @@ with tab1:
             with st.container():
                 df = st.session_state.dataframes[selected_df_name]
                 
-                # Show basic info about the dataframe
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Rows", len(df))
-                with col2:
-                    st.metric("Columns", len(df.columns))
-                with col3:
-                    st.metric("Memory Usage", f"{df.memory_usage(deep=True).sum() / 1024:.1f} KB")
+                # Show basic info about the dataframe in collapsible section
+                with st.expander("Details", expanded=False):
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Rows", len(df))
+                    with col2:
+                        st.metric("Columns", len(df.columns))
+                    with col3:
+                        st.metric("Memory Usage", f"{df.memory_usage(deep=True).sum() / 1024:.1f} KB")
                 
                 # Display the dataframe
                 st.subheader(f"Data Preview: {selected_df_name}")
