@@ -316,35 +316,34 @@ def run_po_generation_tab():
     sales_dfs = [df for df in st.session_state.dataframes.keys() if df.startswith('By Products -')]
     
     # Validation section
-    st.subheader("📋 Data Validation")
-    
-    missing_files = []
-    for df in required_base_dfs:
-        if df in st.session_state.dataframes:
-            st.write(f"✅ {df}")
-        else:
-            st.write(f"❌ {df}")
-            missing_files.append(df)
-    
-    if len(sales_dfs) >= 4:  # Need all 4 sales metrics
-        st.write(f"✅ By Products Data ({len(sales_dfs)} datasets available)")
-    else:
-        st.write("❌ By Products Data (Need Sales by Product Details Report)")
-        missing_files.append("By Products Data")
-    
-    # Check for replenishment reports
-    replenishment_nc = any('Replenishment Report - NC' in df for df in st.session_state.dataframes.keys())
-    replenishment_ca = any('Replenishment Report - CA' in df for df in st.session_state.dataframes.keys())
-    
-    if replenishment_nc:
-        st.write("✅ NC Replenishment Report")
-    else:
-        st.write("❌ NC Replenishment Report")
+    with st.expander("📋 Data Validation", expanded=False):
+        missing_files = []
+        for df in required_base_dfs:
+            if df in st.session_state.dataframes:
+                st.write(f"✅ {df}")
+            else:
+                st.write(f"❌ {df}")
+                missing_files.append(df)
         
-    if replenishment_ca:
-        st.write("✅ CA Replenishment Report")
-    else:
-        st.write("❌ CA Replenishment Report")
+        if len(sales_dfs) >= 4:  # Need all 4 sales metrics
+            st.write(f"✅ By Products Data ({len(sales_dfs)} datasets available)")
+        else:
+            st.write("❌ By Products Data (Need Sales by Product Details Report)")
+            missing_files.append("By Products Data")
+        
+        # Check for replenishment reports
+        replenishment_nc = any('Replenishment Report - NC' in df for df in st.session_state.dataframes.keys())
+        replenishment_ca = any('Replenishment Report - CA' in df for df in st.session_state.dataframes.keys())
+        
+        if replenishment_nc:
+            st.write("✅ NC Replenishment Report")
+        else:
+            st.write("❌ NC Replenishment Report")
+            
+        if replenishment_ca:
+            st.write("✅ CA Replenishment Report")
+        else:
+            st.write("❌ CA Replenishment Report")
     
     # Supplier Management Section
     # Load current excluded suppliers for display
@@ -353,6 +352,15 @@ def run_po_generation_tab():
     
     supplier_count = len(st.session_state.excluded_suppliers)
     st.info(f"🚫 Currently excluding {supplier_count} suppliers from purchase orders. Use the 'Supplier Management' tab to modify the list.")
+    
+    # Determine missing files for validation
+    missing_files = []
+    for df in required_base_dfs:
+        if df not in st.session_state.dataframes:
+            missing_files.append(df)
+    
+    if len(sales_dfs) < 4:  # Need all 4 sales metrics
+        missing_files.append("By Products Data")
     
     # Processing section
     st.subheader("🚀 Generate Purchase Orders")
